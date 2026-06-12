@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -19,7 +20,7 @@ def create_event(
         expira = ahora + timedelta(days=vigencia_valor)
 
     return {
-        "id":          int(ahora.timestamp() * 1000),
+        "id":          uuid.uuid4().int >> 64,
         "titulo":      titulo.strip(),
         "descripcion": descripcion.strip(),
         "area":        area.strip(),

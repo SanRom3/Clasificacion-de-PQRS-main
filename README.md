@@ -94,7 +94,7 @@ POST /classify?incluir_respuesta=true
 - Plotly
 - NLTK
 
-## Próximos pasos
+## Próximos cambios
 
 - Sugerir área responsable y ruta de atención.
 - Agregar semáforo de riesgo institucional.

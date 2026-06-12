@@ -13,3 +13,5 @@ mlflow
 matplotlib
 seaborn
 groq
+pytest
+httpx
