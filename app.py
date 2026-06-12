@@ -448,9 +448,3 @@ with tab4:
 
 st.markdown("---")
 st.caption("Clasificador AutoML de PQRS · Construido con Optuna, scikit-learn y Streamlit · [GitHub](https://github.com/SanRom3/Clasificaci-n-de-PQRS)")
-
-    st.markdown("---")
-    st.markdown("**Métrica de optimización:** F1-macro — penaliza el mal desempeño en clases minoritarias.")
-
-st.markdown("---")
-st.caption("Clasificador AutoML de PQRS · Construido con Optuna, scikit-learn y Streamlit · [GitHub](https://github.com/SanRom3/Clasificaci-n-de-PQRS)")
