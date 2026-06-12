@@ -7,6 +7,14 @@ import streamlit as st
 from pathlib import Path
 
 from src.pqrs_service import clasificar_pqrs
+from src.events import (
+    load_events,
+    add_event,
+    delete_event,
+    create_event,
+    is_active,
+    time_remaining,
+)
 
 nltk.download("stopwords", quiet=True)
 
@@ -177,7 +185,7 @@ if model is None:
     st.error("Modelo no encontrado. Sube `models/best_pipeline.pkl` al repositorio.")
     st.stop()
 
-tab1, tab2, tab3 = st.tabs(["Clasificar texto", "Simulación en lote", "Cómo funciona"])
+tab1, tab2, tab3, tab4 = st.tabs(["Clasificar texto", "Simulación en lote", "Cómo funciona", "Eventos institucionales"])
 
 with tab1:
     st.markdown("##### Ingresa cualquier texto y el modelo lo clasificará automáticamente")
@@ -363,6 +371,80 @@ with tab3:
 
     st.markdown("---")
     st.markdown("**Métrica de optimización:** F1-macro — penaliza el mal desempeño en clases minoritarias.")
+
+with tab4:
+    st.markdown("#### Eventos institucionales")
+    st.markdown(
+        "Registra incidentes o eventos vigentes (caídas del sistema, "
+        "mantenimientos, fallas masivas, etc.). Mientras estén activos, "
+        "el generador de respuestas los tendrá en cuenta para responder "
+        "con empatía y disculpas institucionales cuando una PQRS esté relacionada."
+    )
+    st.markdown("")
+
+    with st.form("nuevo_evento_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            titulo = st.text_input("Título del evento", placeholder="Ej: Caída del portal de pagos")
+            area = st.text_input("Área responsable", value="General")
+        with col2:
+            vigencia_valor = st.number_input("Vigencia", min_value=1, value=24, step=1)
+            vigencia_tipo = st.selectbox("Unidad de vigencia", ["horas", "días"])
+
+        descripcion = st.text_area(
+            "Descripción",
+            placeholder="Ej: El portal de pagos en línea presentó intermitencias entre las 8am y las 11am del día de hoy.",
+            height=100,
+        )
+
+        crear = st.form_submit_button("Registrar evento", type="primary", use_container_width=True)
+
+        if crear:
+            if not titulo.strip() or not descripcion.strip():
+                st.warning("Completa el título y la descripción del evento.")
+            else:
+                # vigencia_tipo internamente se maneja como "horas" o "dias"
+                tipo_interno = "horas" if vigencia_tipo == "horas" else "dias"
+                evento = create_event(
+                    titulo=titulo,
+                    descripcion=descripcion,
+                    vigencia_valor=int(vigencia_valor),
+                    vigencia_tipo=tipo_interno,
+                    area=area or "General",
+                )
+                add_event(evento)
+                st.success("Evento registrado correctamente.")
+                st.rerun()
+
+    st.markdown("---")
+    st.markdown("**Eventos registrados**")
+
+    eventos = load_events()
+    eventos_ordenados = sorted(eventos, key=lambda e: e["creado_en"], reverse=True)
+
+    if not eventos_ordenados:
+        st.info("No hay eventos registrados.")
+    else:
+        for evento in eventos_ordenados:
+            activo = is_active(evento)
+            estado_color = "#10B981" if activo else "#6B7280"
+            estado_texto = time_remaining(evento) if activo else "Expirado"
+
+            col_info, col_btn = st.columns([5, 1])
+            with col_info:
+                st.markdown(f"""
+                <div class="result-row">
+                    <span class="badge" style="background:{estado_color}22;color:{estado_color};border:1px solid {estado_color}55">{estado_texto}</span>
+                    &nbsp;
+                    <span class="badge" style="background:#3B82F622;color:#3B82F6;border:1px solid #3B82F655">{evento['area']}</span>
+                    <br>
+                    <strong style="color:#e2e8f0">{evento['titulo']}</strong><br>
+                    <span style="color:#94a3b8">{evento['descripcion']}</span>
+                </div>""", unsafe_allow_html=True)
+            with col_btn:
+                if st.button("Eliminar", key=f"del_{evento['id']}", use_container_width=True):
+                    delete_event(evento["id"])
+                    st.rerun()
 
 st.markdown("---")
 st.caption("Clasificador AutoML de PQRS · Construido con Optuna, scikit-learn y Streamlit · [GitHub](https://github.com/SanRom3/Clasificaci-n-de-PQRS)")
