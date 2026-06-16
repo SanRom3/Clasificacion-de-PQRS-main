@@ -76,6 +76,16 @@ class ClasificacionResponse(BaseModel):
     probabilidades: Optional[dict[str, float]] = Field(
         description="Probabilidad por cada categoría"
     )
+    nivel_riesgo: str = Field(
+        default="Verde",
+        description="Semáforo de riesgo: Verde | Amarillo | Rojo",
+    )
+    score_riesgo: int = Field(
+        default=0,
+        ge=0,
+        le=100,
+        description="Score de riesgo (0-100) que determina el semáforo",
+    )
     respuesta_sugerida: Optional[str] = Field(
         default=None,
         description="Respuesta institucional sugerida para la PQRS",
@@ -86,7 +96,7 @@ class ClasificacionResponse(BaseModel):
     )
     eventos_considerados: int = Field(
         default=0,
-        description="Cantidad de eventos institucionales activos usados como contexto",
+        description="Cantidad de eventos institucionales activos al momento de clasificar",
     )
 
     class Config:
@@ -102,6 +112,8 @@ class ClasificacionResponse(BaseModel):
                     "Reclamo": 94.2,
                     "Sugerencia": 0.7,
                 },
+                "nivel_riesgo": "Rojo",
+                "score_riesgo": 75,
             }
         }
 

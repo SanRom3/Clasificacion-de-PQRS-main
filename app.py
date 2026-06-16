@@ -35,6 +35,11 @@ URGENCY_COLORS = {
     "Media": "#F59E0B",
     "Baja":  "#10B981",
 }
+RISK_COLORS = {
+    "Rojo":     "#EF4444",
+    "Amarillo": "#F59E0B",
+    "Verde":    "#10B981",
+}
 ID2LABEL = {0: "Petición", 1: "Queja", 2: "Reclamo", 3: "Sugerencia"}
 
 st.markdown("""
@@ -216,16 +221,22 @@ with tab1:
             )
 
         st.markdown("---")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         cat_c  = CATEGORY_COLORS.get(res["categoria"], "#6B7280")
         urg_c  = URGENCY_COLORS.get(res["urgencia"], "#6B7280")
         con_c  = "#10B981" if res["confianza"] and res["confianza"] > 75 else "#F59E0B"
         con_str = f"{res['confianza']:.1f}%" if res["confianza"] else "N/A"
+        risk_c   = RISK_COLORS.get(res["nivel_riesgo"], "#6B7280")
+        risk_val = (
+            f"{res['nivel_riesgo']}"
+            f"<br><span style='font-size:0.75rem;color:#64748b'>Score: {res['score_riesgo']}/100</span>"
+        )
 
         for col, label, value, color in [
             (c1, "Categoría", res["categoria"], cat_c),
             (c2, "Urgencia",  res["urgencia"],  urg_c),
             (c3, "Confianza", con_str,           con_c),
+            (c4, "Semáforo de riesgo", risk_val, risk_c),
         ]:
             with col:
                 st.markdown(f"""
@@ -278,9 +289,16 @@ with tab2:
                     "Categoría": res["categoria"],
                     "Urgencia":  res["urgencia"],
                     "Confianza": f"{res['confianza']:.1f}%" if res["confianza"] else "N/A",
+                    "Riesgo":    res["nivel_riesgo"],
+                    "Score":     res["score_riesgo"],
                 })
 
-        df = pd.DataFrame(results)
+        st.session_state["pqrs_batch_df"] = pd.DataFrame(results)
+        st.session_state["pqrs_batch_n"]  = n_textos
+
+    if "pqrs_batch_df" in st.session_state:
+        df = st.session_state["pqrs_batch_df"]
+        n_textos_batch = st.session_state["pqrs_batch_n"]
         conteo = df["Categoría"].value_counts()
 
         st.markdown("---")
@@ -294,7 +312,7 @@ with tab2:
                 <div class="metric-card" style="border-top:3px solid {color}">
                     <div class="metric-label">{cat}</div>
                     <div class="metric-value" style="color:{color}">{count}</div>
-                    <div style="color:#64748b;font-size:0.8rem">{count/n_textos*100:.0f}% del lote</div>
+                    <div style="color:#64748b;font-size:0.8rem">{count/n_textos_batch*100:.0f}% del lote</div>
                 </div>""", unsafe_allow_html=True)
 
         st.markdown("")
@@ -329,21 +347,75 @@ with tab2:
             )
             st.plotly_chart(fig_urg, use_container_width=True)
 
-        st.markdown("**Detalle del lote clasificado**")
-        for _, row in df.iterrows():
-            cat_c = CATEGORY_COLORS.get(row["Categoría"], "#6B7280")
-            urg_c = URGENCY_COLORS.get(row["Urgencia"], "#6B7280")
-            st.markdown(f"""
-            <div class="result-row">
-                <span style="color:#94a3b8">{row['Texto']}</span><br>
-                <span style="margin-top:6px;display:inline-block">
-                    <span class="badge" style="background:{cat_c}22;color:{cat_c};border:1px solid {cat_c}55">{row['Categoría']}</span>
-                    &nbsp;
-                    <span class="badge" style="background:{urg_c}22;color:{urg_c};border:1px solid {urg_c}55">Urgencia {row['Urgencia']}</span>
-                    &nbsp;
-                    <span style="color:#475569;font-size:0.75rem;font-family:'IBM Plex Mono',monospace">{row['Confianza']}</span>
-                </span>
-            </div>""", unsafe_allow_html=True)
+        st.markdown("---")
+        st.markdown("**Filtrar y ordenar resultados**")
+        st.markdown(
+            "<span style='color:#64748b;font-size:0.85rem'>"
+            "Elige qué categorías ver y cómo ordenar el detalle del lote: "
+            "por urgencia o por semáforo de riesgo, de mayor a menor o de menor a mayor."
+            "</span>",
+            unsafe_allow_html=True,
+        )
+
+        col_f1, col_f2, col_f3 = st.columns([2, 1, 1])
+        with col_f1:
+            categorias_mostrar = st.multiselect(
+                "Categorías a mostrar",
+                options=["Petición", "Queja", "Reclamo", "Sugerencia"],
+                default=["Petición", "Queja", "Reclamo", "Sugerencia"],
+            )
+        with col_f2:
+            ordenar_por = st.selectbox(
+                "Ordenar por",
+                ["Orden de generación", "Urgencia", "Semáforo de riesgo"],
+            )
+        with col_f3:
+            orden_direccion = st.radio(
+                "Orden",
+                ["Mayor a menor", "Menor a mayor"],
+                horizontal=True,
+            )
+
+        df_filtrado = df[df["Categoría"].isin(categorias_mostrar)].copy()
+
+        if ordenar_por == "Urgencia":
+            urgencia_rank = {"Alta": 3, "Media": 2, "Baja": 1}
+            df_filtrado["_orden"] = df_filtrado["Urgencia"].map(urgencia_rank)
+            df_filtrado = df_filtrado.sort_values(
+                "_orden", ascending=(orden_direccion == "Menor a mayor"), kind="stable"
+            )
+        elif ordenar_por == "Semáforo de riesgo":
+            df_filtrado = df_filtrado.sort_values(
+                "Score", ascending=(orden_direccion == "Menor a mayor"), kind="stable"
+            )
+
+        st.markdown(
+            f"**Detalle del lote clasificado** "
+            f"<span style='color:#64748b;font-size:0.85rem;font-family:\"IBM Plex Mono\",monospace'>"
+            f"({len(df_filtrado)} de {len(df)})</span>",
+            unsafe_allow_html=True,
+        )
+
+        if df_filtrado.empty:
+            st.info("No hay resultados que coincidan con las categorías seleccionadas.")
+        else:
+            for _, row in df_filtrado.iterrows():
+                cat_c  = CATEGORY_COLORS.get(row["Categoría"], "#6B7280")
+                urg_c  = URGENCY_COLORS.get(row["Urgencia"], "#6B7280")
+                risk_c = RISK_COLORS.get(row["Riesgo"], "#6B7280")
+                st.markdown(f"""
+                <div class="result-row">
+                    <span style="color:#94a3b8">{row['Texto']}</span><br>
+                    <span style="margin-top:6px;display:inline-block">
+                        <span class="badge" style="background:{cat_c}22;color:{cat_c};border:1px solid {cat_c}55">{row['Categoría']}</span>
+                        &nbsp;
+                        <span class="badge" style="background:{urg_c}22;color:{urg_c};border:1px solid {urg_c}55">Urgencia {row['Urgencia']}</span>
+                        &nbsp;
+                        <span class="badge" style="background:{risk_c}22;color:{risk_c};border:1px solid {risk_c}55">Riesgo {row['Riesgo']}</span>
+                        &nbsp;
+                        <span style="color:#475569;font-size:0.75rem;font-family:'IBM Plex Mono',monospace">{row['Confianza']}</span>
+                    </span>
+                </div>""", unsafe_allow_html=True)
 
 
 with tab3:
