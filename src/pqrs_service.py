@@ -1,157 +1,149 @@
 import os
+import numpy as np
 
-import pytest
+from src.preprocess import clean_text
+from src.events import get_active_events, build_context_prompt
+from src.responder import generate_response
 
-from src.pqrs_service import (
-    infer_urgencia,
-    get_probabilidades,
-    clasificar_pqrs,
-    calcular_riesgo,
-    ID2LABEL,
-)
-
-
-# ---------- infer_urgencia ----------
-
-@pytest.mark.parametrize("texto,categoria,esperado", [
-    ("Exijo el reembolso inmediato de mi dinero.", "Reclamo", "Alta"),
-    ("Llevo varios meses esperando una solución.", "Reclamo", "Alta"),
-    ("Quisiera saber el estado de mi trámite.", "Reclamo", "Media"),
-    ("El servicio fue muy malo.", "Queja", "Media"),
-    ("Solicito información sobre mis certificados.", "Petición", "Baja"),
-    ("Sugiero mejorar la atención al cliente.", "Sugerencia", "Baja"),
-])
-def test_infer_urgencia(texto, categoria, esperado):
-    assert infer_urgencia(texto, categoria) == esperado
+ID2LABEL = {
+    0: "Petición",
+    1: "Queja",
+    2: "Reclamo",
+    3: "Sugerencia",
+}
 
 
-def test_infer_urgencia_is_case_insensitive():
-    assert infer_urgencia("EXIJO una respuesta URGENTE", "Reclamo") == "Alta"
+def infer_urgencia(texto: str, categoria: str) -> str:
+    texto_lower = texto.lower()
+    palabras_alta = [
+        "urgente",
+        "inmediato",
+        "plazo",
+        "legal",
+        "exijo",
+        "meses",
+        "organismos",
+        "denuncia",
+        "reembolso",
+    ]
+
+    if categoria == "Reclamo":
+        return "Alta" if any(p in texto_lower for p in palabras_alta) else "Media"
+
+    if categoria == "Queja":
+        return "Media"
+
+    return "Baja"
 
 
-# ---------- get_probabilidades ----------
+def get_probabilidades(model, texto_limpio: str) -> tuple[float | None, dict[str, float] | None]:
+    if hasattr(model, "predict_proba"):
+        proba_arr = model.predict_proba([texto_limpio])[0]
+    elif hasattr(model.named_steps["classifier"], "decision_function"):
+        scores = model.decision_function([texto_limpio])[0]
+        exp_scores = np.exp(scores - scores.max())
+        proba_arr = exp_scores / exp_scores.sum()
+    else:
+        return None, None
 
-def test_get_probabilidades_returns_confidence_and_distribution(dummy_model):
-    confianza, probabilidades = get_probabilidades(dummy_model, "exijo reembolso ya")
+    confianza = float(proba_arr.max() * 100)
+    probabilidades = {
+        ID2LABEL[i]: round(float(prob * 100), 2)
+        for i, prob in enumerate(proba_arr)
+    }
 
-    assert confianza is not None
-    assert 0 <= confianza <= 100
-    assert set(probabilidades.keys()) == set(ID2LABEL.values())
-    assert pytest.approx(sum(probabilidades.values()), abs=0.5) == 100
+    return round(confianza, 2), probabilidades
 
 
-# ---------- clasificar_pqrs ----------
+def calcular_riesgo(
+    categoria: str,
+    urgencia: str,
+    confianza: float | None,
+    eventos_considerados: int = 0,
+) -> tuple[int, str]:
+    """Calcula un score de riesgo (0-100) y su nivel asociado (Verde/Amarillo/Rojo).
 
-def test_clasificar_pqrs_sin_respuesta(dummy_model, isolated_events_file):
-    resultado = clasificar_pqrs(
-        texto="Exijo el reembolso de mi dinero, ya pagué y no recibí nada.",
-        model=dummy_model,
-        incluir_respuesta=False,
+    El score combina:
+    - Urgencia: principal señal de prioridad temporal.
+    - Categoría: un Reclamo o Queja conllevan mayor riesgo institucional que
+      una Petición o Sugerencia.
+    - Eventos institucionales activos: si la PQRS coincide con un incidente
+      vigente, el riesgo de escalamiento aumenta.
+    - Confianza del modelo: una clasificación poco confiable requiere
+      revisión adicional, lo que también incrementa el riesgo.
+    """
+    base_urgencia = {"Alta": 60, "Media": 35, "Baja": 10}
+    ajuste_categoria = {"Reclamo": 15, "Queja": 5, "Petición": 0, "Sugerencia": 0}
+
+    score = base_urgencia.get(urgencia, 10)
+    score += ajuste_categoria.get(categoria, 0)
+
+    if eventos_considerados > 0:
+        score += 20
+
+    if confianza is not None and confianza < 60:
+        score += 10
+
+    score = max(0, min(100, score))
+
+    if score >= 70:
+        nivel = "Rojo"
+    elif score >= 40:
+        nivel = "Amarillo"
+    else:
+        nivel = "Verde"
+
+    return score, nivel
+
+
+def clasificar_pqrs(
+    texto: str,
+    model,
+    incluir_respuesta: bool = False,
+) -> dict:
+    texto_limpio = clean_text(texto, use_lemmatization=False)
+
+    pred = model.predict([texto_limpio])[0]
+    categoria = ID2LABEL.get(pred, str(pred))
+    urgencia = infer_urgencia(texto, categoria)
+    confianza, probabilidades = get_probabilidades(model, texto_limpio)
+
+    eventos_activos = get_active_events()
+    eventos_considerados = len(eventos_activos)
+
+    score_riesgo, nivel_riesgo = calcular_riesgo(
+        categoria=categoria,
+        urgencia=urgencia,
+        confianza=confianza,
+        eventos_considerados=eventos_considerados,
     )
 
-    assert resultado["categoria"] == "Reclamo"
-    assert resultado["urgencia"] == "Alta"
-    assert resultado["confianza"] is not None
-    assert resultado["probabilidades"] is not None
-    assert resultado["respuesta_sugerida"] is None
-    assert resultado["fuente_respuesta"] is None
-    assert resultado["eventos_considerados"] == 0
-    assert resultado["nivel_riesgo"] == "Rojo"
-    assert resultado["score_riesgo"] >= 70
+    resultado = {
+        "texto": texto,
+        "categoria": categoria,
+        "urgencia": urgencia,
+        "confianza": confianza,
+        "probabilidades": probabilidades,
+        "respuesta_sugerida": None,
+        "fuente_respuesta": None,
+        "eventos_considerados": eventos_considerados,
+        "score_riesgo": score_riesgo,
+        "nivel_riesgo": nivel_riesgo,
+    }
 
+    if incluir_respuesta:
+        contexto_eventos = build_context_prompt(eventos_activos)
+        api_key = os.environ.get("GROQ_API_KEY", "")
 
-def test_clasificar_pqrs_con_respuesta_usa_plantilla(dummy_model, isolated_events_file, monkeypatch):
-    # Sin API key, debe caer a respuesta de plantilla
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        respuesta, fuente = generate_response(
+            texto=texto,
+            categoria=categoria,
+            urgencia=urgencia,
+            api_key=api_key,
+            events_context=contexto_eventos,
+        )
 
-    resultado = clasificar_pqrs(
-        texto="Sugiero mejorar la atención en ventanilla.",
-        model=dummy_model,
-        incluir_respuesta=True,
-    )
+        resultado["respuesta_sugerida"] = respuesta
+        resultado["fuente_respuesta"] = fuente
 
-    assert resultado["categoria"] == "Sugerencia"
-    assert resultado["respuesta_sugerida"] is not None
-    assert resultado["fuente_respuesta"] == "Plantilla"
-    assert resultado["eventos_considerados"] == 0
-
-
-def test_clasificar_pqrs_cuenta_eventos_activos(dummy_model, isolated_events_file, monkeypatch):
-    from src.events import create_event, add_event
-
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
-
-    ev = create_event(
-        titulo="Falla en pagos",
-        descripcion="El sistema de pagos presentó intermitencias hoy.",
-        vigencia_valor=1,
-        vigencia_tipo="dias",
-        area="Pagos",
-    )
-    add_event(ev)
-
-    resultado = clasificar_pqrs(
-        texto="Exijo respuesta urgente sobre mi reclamo de pagos.",
-        model=dummy_model,
-        incluir_respuesta=True,
-    )
-
-    assert resultado["eventos_considerados"] == 1
-
-
-@pytest.mark.parametrize("texto,categoria_esperada", [
-    ("Solicito información sobre mi certificado de estudios.", "Petición"),
-    ("Estoy muy molesto con el servicio, es pésimo.", "Queja"),
-    ("Exijo el reembolso de mi dinero por el reclamo presentado.", "Reclamo"),
-    ("Sugiero implementar un sistema de citas en línea.", "Sugerencia"),
-])
-def test_clasificar_pqrs_categorias(dummy_model, isolated_events_file, texto, categoria_esperada):
-    resultado = clasificar_pqrs(texto=texto, model=dummy_model, incluir_respuesta=False)
-    assert resultado["categoria"] == categoria_esperada
-
-
-# ---------- calcular_riesgo ----------
-
-@pytest.mark.parametrize("categoria,urgencia,confianza,eventos,score_min,score_max,nivel", [
-    ("Sugerencia", "Baja", 90, 0, 0, 39, "Verde"),
-    ("Petición", "Baja", 95, 0, 0, 39, "Verde"),
-    ("Queja", "Media", 80, 0, 40, 69, "Amarillo"),
-    ("Reclamo", "Media", 80, 0, 40, 69, "Amarillo"),
-    ("Reclamo", "Alta", 90, 0, 70, 100, "Rojo"),
-    ("Reclamo", "Alta", 95, 1, 70, 100, "Rojo"),
-    ("Petición", "Baja", 40, 1, 40, 69, "Amarillo"),
-])
-def test_calcular_riesgo_niveles(categoria, urgencia, confianza, eventos, score_min, score_max, nivel):
-    score, nivel_resultado = calcular_riesgo(categoria, urgencia, confianza, eventos)
-    assert score_min <= score <= score_max
-    assert nivel_resultado == nivel
-
-
-def test_calcular_riesgo_score_clamped_to_100():
-    score, nivel = calcular_riesgo("Reclamo", "Alta", confianza=10, eventos_considerados=5)
-    assert score == 100
-    assert nivel == "Rojo"
-
-
-def test_calcular_riesgo_baja_confianza_incrementa_score():
-    score_alta_conf, _ = calcular_riesgo("Petición", "Baja", confianza=90, eventos_considerados=0)
-    score_baja_conf, _ = calcular_riesgo("Petición", "Baja", confianza=30, eventos_considerados=0)
-    assert score_baja_conf > score_alta_conf
-
-
-def test_calcular_riesgo_eventos_activos_incrementa_score():
-    score_sin_evento, _ = calcular_riesgo("Queja", "Media", confianza=80, eventos_considerados=0)
-    score_con_evento, _ = calcular_riesgo("Queja", "Media", confianza=80, eventos_considerados=1)
-    assert score_con_evento > score_sin_evento
-
-
-def test_calcular_riesgo_categoria_desconocida_no_falla():
-    score, nivel = calcular_riesgo("CategoriaInventada", "Media", confianza=80, eventos_considerados=0)
-    assert isinstance(score, int)
-    assert nivel in {"Verde", "Amarillo", "Rojo"}
-
-
-def test_calcular_riesgo_confianza_none_no_falla():
-    score, nivel = calcular_riesgo("Petición", "Baja", confianza=None, eventos_considerados=0)
-    assert isinstance(score, int)
-    assert nivel == "Verde"
+    return resultado
