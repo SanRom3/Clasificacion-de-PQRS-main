@@ -8,7 +8,6 @@ Las entidades que reciben PQRS deben leer, clasificar, priorizar y responder gra
 
 ## Estructura
 
-```text
 .
 ├── api/
 │   ├── main.py              # API REST con FastAPI
@@ -36,7 +35,6 @@ Las entidades que reciben PQRS deben leer, clasificar, priorizar y responder gra
 ├── requirements.txt
 ├── runtime.txt
 └── LICENSE
-```
 
 ## Instalación
 
