@@ -1,2 +1,0 @@
-mejor_clasificador,mejor_vectorizador,mejor_f1_val,f1_test_macro,accuracy_test,total_trials
-svm,count,1.0,1.0,1.0,5
